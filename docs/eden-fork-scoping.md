@@ -2,6 +2,28 @@
 
 *Researched 2026-07-21. Sources linked at bottom.*
 
+> ## ⚠️ OUTCOME (added same day, after reading the actual source): fork not needed
+>
+> 1. **Eden already shipped the scoped feature.** Upstream PR
+>    [#3154 — "Implement custom save path setting and migration"](https://git.eden-emu.dev/eden-emu/eden/pulls/3154)
+>    added a user-facing **Settings → "Save Data Directory"** (verified in
+>    `SettingsFragmentPresenter.kt:1310` / `SettingsFragment.kt` in the current
+>    mirror, localized into ~12 languages) with a directory picker,
+>    all-files-access permission, and built-in save migration. Issue #251 is
+>    answered by shipped code. Setting the save dir to a public folder (e.g.
+>    `/storage/emulated/0/EdenSaves`) makes saves land in
+>    `EdenSaves/user/save` — externally syncable, **no root, no fork**.
+>    The `eden` profile in `profiles/emulators.conf` now uses this.
+> 2. **Eden prohibits AI-assisted contributions.** The repo's policy file
+>    states AI/LLM use is strictly prohibited in their codebase and community
+>    (code, docs, commits, issues). Since this project's patches are
+>    AI-written, an upstream PR from us was off the table regardless —
+>    submitting one would have violated their stated policy. Duplicating an
+>    already-shipped feature was the bigger blocker, but this settles it.
+>
+> The original scoping below is preserved for reference; its "MVP" section
+> describes, fairly closely, what Eden's own developers shipped in #3154.
+
 ## Why Eden is the right target
 
 Of the emulators in our fleet, Eden (Switch, yuzu lineage) is the **only one
