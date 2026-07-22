@@ -1,0 +1,228 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# ============================================================================
+#  ecs  —  Emulator Cloud Sync
+#  A thin, safe wrapper over rclone that keeps emulator SAVES/CONFIGS in sync
+#  two-ways with the cloud, and pulls ROMs down on demand.
+#
+#  Works with Google Drive OR OneDrive (or any rclone remote) — same commands.
+#
+#  Usage:
+#     ecs list                 Show profiles + whether each path exists here
+#     ecs sync   [emu|all]     Two-way save/config sync (safe, conflict-aware)
+#     ecs pull   [emu|all]     Download ROMs cloud -> device (immutable copy)
+#     ecs push   [emu|all]     Force-push saves device -> cloud (before travel)
+#     ecs fetch  [emu|all]     Force-pull saves cloud -> device (new device)
+#     ecs status [emu|all]     Dry-run: show what WOULD change, no writes
+#     ecs resync [emu|all]     Re-establish the two-way baseline (see notes)
+#     ecs auto                 sync-all, meant for automation triggers
+#
+#  Design choices (why this is safe):
+#   * SAVES use `rclone bisync` with conflict-resolve=newer + safety rails,
+#     so a stale device can't silently clobber a newer save.
+#   * ROMs use one-way `copy` (never delete), because ROMs are read-only.
+#   * Root-only emulators (Android/data) are bridged via a `su` staging copy;
+#     on non-root devices they are skipped with a clear message.
+# ============================================================================
+
+set -u
+
+# ---- locate ourselves / config --------------------------------------------
+SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+ROOT_DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
+CONF="${ECS_CONF:-$ROOT_DIR/profiles/emulators.conf}"
+LOG_DIR="$HOME/.ecs/logs"
+mkdir -p "$LOG_DIR"
+
+# ---- pretty output --------------------------------------------------------
+c_reset=$'\033[0m'; c_dim=$'\033[2m'; c_grn=$'\033[32m'; c_red=$'\033[31m'
+c_yel=$'\033[33m'; c_cyn=$'\033[36m'; c_bold=$'\033[1m'
+say()  { printf '%s\n' "$*"; }
+ok()   { printf '%s✓%s %s\n' "$c_grn" "$c_reset" "$*"; }
+warn() { printf '%s!%s %s\n' "$c_yel" "$c_reset" "$*"; }
+err()  { printf '%s✗%s %s\n' "$c_red" "$c_reset" "$*" >&2; }
+head() { printf '\n%s%s%s\n' "$c_bold$c_cyn" "$*" "$c_reset"; }
+
+# ---- profile registry -----------------------------------------------------
+declare -A P_LABEL P_ROOT P_PKG P_SAVES P_CONFIG P_ROMS_L P_ROMS_R P_SAVES_R P_REMOTE
+PROFILE_KEYS=()
+
+profile() {
+  local key="$1"; shift
+  PROFILE_KEYS+=("$key")
+  P_REMOTE[$key]=""          # optional per-profile remote override
+  while [ "$#" -ge 2 ]; do
+    local field="$1" value="$2"; shift 2
+    case "$field" in
+      label)        P_LABEL[$key]="$value" ;;
+      root)         P_ROOT[$key]="$value" ;;
+      pkg)          P_PKG[$key]="$value" ;;
+      saves)        P_SAVES[$key]="$value" ;;
+      config)       P_CONFIG[$key]="$value" ;;
+      roms_local)   P_ROMS_L[$key]="$value" ;;
+      roms_remote)  P_ROMS_R[$key]="$value" ;;
+      saves_remote) P_SAVES_R[$key]="$value" ;;
+      remote)       P_REMOTE[$key]="$value" ;;
+      *) warn "unknown field '$field' in profile '$key' (ignored)" ;;
+    esac
+  done
+}
+
+[ -f "$CONF" ] || { err "config not found: $CONF"; exit 1; }
+# shellcheck disable=SC1090
+source "$CONF"
+
+RCLONE="$(command -v rclone || true)"
+remote_for() { local k="$1"; [ -n "${P_REMOTE[$k]}" ] && echo "${P_REMOTE[$k]}" || echo "$CLOUD_REMOTE"; }
+
+# common rclone flags for bidirectional SAVE sync — the safety rails
+BISYNC_FLAGS=(
+  --conflict-resolve newer      # newer file wins a true conflict
+  --conflict-loser pathname     # keep the loser as name..conflict, never delete it
+  --resilient --recover         # tolerate a killed run; self-heal next time
+  --max-delete 25               # abort if >25 files would be deleted (safety)
+  --create-empty-src-dirs
+  --compare size,modtime
+)
+
+# ---- helpers --------------------------------------------------------------
+require_rclone() {
+  [ -n "$RCLONE" ] || { err "rclone not installed. Run: pkg install rclone"; exit 1; }
+}
+
+# split a colon-separated path list into an array (var name passed in)
+split_paths() { local IFS=':'; read -r -a "$2" <<< "$1"; }
+
+# does this profile apply on this device?
+usable() {
+  local k="$1"
+  if [ "${P_ROOT[$k]:-0}" = "1" ] && [ "${DEVICE_ROOTED:-0}" != "1" ]; then
+    return 1
+  fi
+  return 0
+}
+
+# resolve which profiles a command targets
+targets() {
+  local arg="${1:-all}"
+  if [ "$arg" = "all" ]; then printf '%s\n' "${PROFILE_KEYS[@]}"; return; fi
+  for k in "${PROFILE_KEYS[@]}"; do [ "$k" = "$arg" ] && { echo "$k"; return; }; done
+  err "unknown emulator '$arg'. Known: ${PROFILE_KEYS[*]}"; exit 1
+}
+
+# For ROOT profiles: mirror private dir <-> a Termux-readable staging dir.
+# direction pull_in  = su copy device-private -> staging  (before uploading)
+# direction push_out = su copy staging -> device-private  (after downloading)
+root_bridge() {
+  local key="$1" dir="$2" src="$3"
+  local stage="$STAGING/$key$(printf '%s' "$src" | tr '/' '_')"
+  case "$dir" in
+    pull_in)
+      su -c "mkdir -p '$stage' && cp -a '$src/.' '$stage/' 2>/dev/null; chmod -R a+rwX '$stage'" \
+        || { warn "root copy failed for $src"; return 1; }
+      echo "$stage" ;;
+    push_out)
+      su -c "mkdir -p '$src' && cp -a '$stage/.' '$src/'" \
+        || { warn "root restore failed to $src"; return 1; } ;;
+  esac
+}
+
+# ---- commands -------------------------------------------------------------
+cmd_list() {
+  head "Device: rooted=${DEVICE_ROOTED:-0}   cloud=${CLOUD_REMOTE}:${CLOUD_BASE}"
+  for k in "${PROFILE_KEYS[@]}"; do
+    local tag=""
+    usable "$k" || tag="${c_dim}(needs root — skipped here)${c_reset}"
+    printf '\n%s%s%s  [%s]  %s\n' "$c_bold" "${P_LABEL[$k]}" "$c_reset" "$k" "$tag"
+    local all="${P_SAVES[$k]:-}:${P_CONFIG[$k]:-}"
+    local arr; split_paths "$all" arr
+    for p in "${arr[@]}"; do
+      [ -z "$p" ] && continue
+      if [ "${P_ROOT[$k]:-0}" = "1" ]; then
+        printf '   %s? %s%s (root path)\n' "$c_dim" "$p" "$c_reset"
+      elif [ -e "$p" ]; then ok "  $p"
+      else err "  $p  (not found — edit emulators.conf)"; fi
+    done
+  done
+  echo
+}
+
+# two-way SAVE + CONFIG sync for one profile
+sync_saves_one() {
+  local k="$1" force="${2:-}"          # force = "" | "resync" | "push" | "fetch" | "dry"
+  usable "$k" || { warn "${P_LABEL[$k]}: needs root, skipping"; return 0; }
+  local remote; remote="$(remote_for "$k")"
+  local rbase="$remote:$CLOUD_BASE/${P_SAVES_R[$k]}"
+  local log="$LOG_DIR/${k}-saves.log"
+
+  local all="${P_SAVES[$k]:-}:${P_CONFIG[$k]:-}"
+  local arr; split_paths "$all" arr
+  local idx=0
+  for p in "${arr[@]}"; do
+    [ -z "$p" ] && continue
+    idx=$((idx+1))
+    local leaf; leaf="$(basename "$p")"
+    local dst="$rbase/$leaf"
+    local lpath="$p"
+
+    # ROOT: stage private dir into a Termux-readable copy
+    if [ "${P_ROOT[$k]:-0}" = "1" ]; then
+      lpath="$(root_bridge "$k" pull_in "$p")" || continue
+    fi
+    [ -e "$lpath" ] || { mkdir -p "$lpath"; }
+
+    printf '%s  ↔ %s%s\n' "$c_dim" "$leaf" "$c_reset"
+    case "$force" in
+      dry)    "$RCLONE" bisync "$lpath" "$dst" "${BISYNC_FLAGS[@]}" --dry-run 2>>"$log" | sed 's/^/     /' ;;
+      push)   "$RCLONE" copy   "$lpath" "$dst" --update 2>>"$log" ;;
+      fetch)  "$RCLONE" copy   "$dst" "$lpath" --update 2>>"$log" ;;
+      resync) "$RCLONE" bisync "$lpath" "$dst" "${BISYNC_FLAGS[@]}" --resync 2>>"$log" ;;
+      *)      if ! "$RCLONE" bisync "$lpath" "$dst" "${BISYNC_FLAGS[@]}" 2>>"$log"; then
+                warn "first run needs a baseline — doing resync for $leaf"
+                "$RCLONE" bisync "$lpath" "$dst" "${BISYNC_FLAGS[@]}" --resync 2>>"$log"
+              fi ;;
+    esac
+
+    # ROOT: push the reconciled staging copy back into the private dir
+    if [ "${P_ROOT[$k]:-0}" = "1" ] && [ "$force" != "dry" ]; then
+      root_bridge "$k" push_out "$p"
+    fi
+  done
+  ok "${P_LABEL[$k]} saves done"
+}
+
+# one-way ROM pull (cloud -> device), never deletes local
+pull_roms_one() {
+  local k="$1"
+  usable "$k" || { warn "${P_LABEL[$k]}: needs root, skipping ROMs"; return 0; }
+  local remote; remote="$(remote_for "$k")"
+  local src="$remote:$CLOUD_BASE/${P_ROMS_R[$k]}"
+  local dst="${P_ROMS_L[$k]}"
+  [ -n "$dst" ] || { warn "${P_LABEL[$k]}: no roms_local set"; return 0; }
+  mkdir -p "$dst"
+  head "Pulling ROMs: ${P_LABEL[$k]}  ($src -> $dst)"
+  "$RCLONE" copy "$src" "$dst" \
+      --progress --transfers 4 --checkers 8 \
+      --size-only --check-first \
+      --log-file "$LOG_DIR/${k}-roms.log" \
+    && ok "${P_LABEL[$k]} ROMs up to date" \
+    || warn "${P_LABEL[$k]} ROM pull hit an issue — see $LOG_DIR/${k}-roms.log"
+}
+
+# ---- dispatch -------------------------------------------------------------
+main() {
+  local cmd="${1:-help}"; shift || true
+  case "$cmd" in
+    list)   cmd_list ;;
+    sync)   require_rclone; for k in $(targets "${1:-all}"); do head "Sync ${P_LABEL[$k]}"; sync_saves_one "$k" ""; done ;;
+    status) require_rclone; for k in $(targets "${1:-all}"); do head "Status ${P_LABEL[$k]}"; sync_saves_one "$k" "dry"; done ;;
+    push)   require_rclone; for k in $(targets "${1:-all}"); do head "Push ${P_LABEL[$k]}";  sync_saves_one "$k" "push"; done ;;
+    fetch)  require_rclone; for k in $(targets "${1:-all}"); do head "Fetch ${P_LABEL[$k]}"; sync_saves_one "$k" "fetch"; done ;;
+    resync) require_rclone; for k in $(targets "${1:-all}"); do head "Resync ${P_LABEL[$k]}"; sync_saves_one "$k" "resync"; done ;;
+    pull)   require_rclone; for k in $(targets "${1:-all}"); do pull_roms_one "$k"; done ;;
+    auto)   require_rclone; for k in $(targets all); do sync_saves_one "$k" "" ; done ;;
+    help|-h|--help)
+      sed -n '3,30p' "$SELF" | sed 's/^# \{0,1\}//' ;;
+    *) err "unknown command '$cmd'"; exit 1 ;;
+  esac
+}
+main "$@"

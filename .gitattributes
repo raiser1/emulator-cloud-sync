@@ -1,0 +1,8 @@
+# Force Unix (LF) line endings on all text files, in every working tree.
+# This makes the shell scripts run correctly after `git clone` on Android
+# with no dos2unix step required.
+* text=auto eol=lf
+bin/ecs       text eol=lf
+*.conf        text eol=lf
+*.sh          text eol=lf
+*.md          text eol=lf
