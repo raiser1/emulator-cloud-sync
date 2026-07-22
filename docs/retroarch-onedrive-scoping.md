@@ -22,8 +22,11 @@ And Android support was unblocked in June 2025 by the mbedTLS PR
 cloud sync now builds on Android.
 
 **Fleet impact (do this today, no third-party tool needed for RetroArch):**
-1. Update RetroArch to the current stable (1.22.x) — use the official website
-   APK or nightly, not the feature-stripped Play Store build.
+1. ⚠️ *Correction (verified against tags v1.22.0/v1.22.1): the google_drive
+   backend is in master/nightlies ONLY — no stable release has it yet.*
+   Install a nightly from buildbot.libretro.com/nightly/android/latest/
+   (`RetroArch_aarch64.apk`), or stay on stable and use the WebDAV driver via
+   a local `rclone serve webdav` bridge in Termux.
 2. Settings → Saving → **Cloud Sync** → enable, driver **google_drive** →
    follow the device-code authorization (it shows a code + URL to visit).
 3. Turn on sync for saves/states/configs. Conflicts are non-destructive
