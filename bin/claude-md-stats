@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# claude-md-stats — measure a CLAUDE.md (or any prompt file) so compression
+# runs can be scored deterministically instead of eyeballed by the model.
+#
+#   claude-md-stats [file]              stats for one file (default ./CLAUDE.md)
+#   claude-md-stats --diff old new      before/after comparison
+#   claude-md-stats --snapshot [file]   stash a copy under .ecs/claude-md/ first
+#
+# Token count uses tiktoken when available, else chars/4 (labelled ~).
+
+set -u
+
+est_tokens() {
+  local f="$1"
+  if command -v python3 >/dev/null 2>&1 &&
+     python3 -c 'import tiktoken' >/dev/null 2>&1; then
+    python3 - "$f" <<'PY'
+import sys, tiktoken
+enc = tiktoken.get_encoding("cl100k_base")
+with open(sys.argv[1], encoding="utf-8", errors="replace") as fh:
+    print(len(enc.encode(fh.read())), "exact")
+PY
+  else
+    local chars; chars=$(wc -m <"$f" | tr -d ' ')
+    printf '%s ~\n' "$(( (chars + 3) / 4 ))"
+  fi
+}
+
+stats() {
+  local f="$1"
+  [ -f "$f" ] || { printf 'not found: %s\n' "$f" >&2; return 1; }
+  local tok mark
+  read -r tok mark <<<"$(est_tokens "$f")"
+  printf '%s\n' "$f"
+  printf '  bytes   %s\n' "$(wc -c <"$f" | tr -d ' ')"
+  printf '  lines   %s\n' "$(wc -l <"$f" | tr -d ' ')"
+  printf '  words   %s\n' "$(wc -w <"$f" | tr -d ' ')"
+  printf '  tokens  %s%s\n' "${mark#exact}" "$tok"
+  # rough rule count: bullets plus normative keywords, for the lossless check
+  printf '  rules   %s (bullets/normative lines)\n' \
+    "$(grep -cE '^[[:space:]]*[-*] |never|always|must|do not|don.t' "$f" 2>/dev/null || echo 0)"
+}
+
+tokens_only() { local t m; read -r t m <<<"$(est_tokens "$1")"; printf '%s' "$t"; }
+
+case "${1:-}" in
+  --diff)
+    [ $# -eq 3 ] || { echo "usage: claude-md-stats --diff <old> <new>" >&2; exit 2; }
+    old=$(tokens_only "$2"); new=$(tokens_only "$3")
+    pct=0; [ "$old" -gt 0 ] && pct=$(( (old - new) * 100 / old ))
+    if [ "$pct" -ge 0 ]; then sign='-'; else sign='+'; fi
+    printf '%s -> %s tokens (%s%s%%)\n' "$old" "$new" "$sign" "${pct#-}"
+    ;;
+  --snapshot)
+    f="${2:-CLAUDE.md}"
+    dir="${ECS_SNAPSHOT_DIR:-$HOME/.ecs/claude-md}"
+    mkdir -p "$dir"
+    cp "$f" "$dir/$(basename "$f").$(date +%Y%m%d-%H%M%S)" &&
+      printf 'snapshot -> %s\n' "$dir"
+    stats "$f"
+    ;;
+  -h|--help)
+    sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+  *)
+    stats "${1:-CLAUDE.md}"
+    ;;
+esac
