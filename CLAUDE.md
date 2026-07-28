@@ -26,18 +26,7 @@ No Android/rclone here. Check with `bash -n bin/ecs` and `shellcheck`. Do not cl
 
 ---
 
-# Token discipline
-
-Context quality degrades as the window fills ("context rot"); the large window is insurance, not a target. Apply to every session:
-
-- **Compact at ~60%**, manually. Auto-compact fires near the limit — exactly when the summary is worst.
-- **Delegate wide searches to subagents.** A subagent burns its own context and returns only the report. Use it for "find every place that X", not for a known-file edit.
-- **Read narrowly.** Grep/Glob to locate, then read the specific range. Don't cat whole files to "get oriented"; don't re-read a file already in context; don't re-read after your own successful edit.
-- **`/rewind` beats arguing.** A wrong turn is cheaper to reset than to correct across several turns. (Rewind = code+conversation; "conversation only" keeps the code.)
-- **Chain sessions.** At a natural boundary: summarize state → `/clear` → paste summary as the first message of the new session.
-- **Markdown in, not HTML/PDF.** Converted markdown runs ~85–90% cheaper for the same content.
-- **Smallest model that clears the bar.** Renames, formatting, mechanical edits don't need Opus.
-- **Batch independent tool calls** into one turn.
-- **No preamble, no recap, no narration.** Answer, then stop. Skip "Great question", skip restating the request, skip summarizing a diff the user can see.
-
-Maintain this file with `/compress-claude-md` (runs weekly, Wed AM CST).
+Token discipline lives in the global `~/.claude/CLAUDE.md` (source: `raiser1/station`
+→ `claude-global/`). Do not restate it here. Maintain this file with
+`/compress-claude-md` (runs weekly, Wed AM CST); protected rules are listed in
+`.claude/protected-rules.md`.
