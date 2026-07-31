@@ -45,33 +45,65 @@ If you hit `empty token`, run `rclone config reconnect gdrive:`.
 `Personal Vault/` throws `invalidResourceId: ObjectHandle is Invalid` — it is the BitLocker-encrypted
 OneDrive vault. **rclone cannot reach it by design. Leave it alone.** Not an error to fix.
 
-## 5. Current state (measured 2026-07-30)
+## 5. Current state (updated 2026-07-31)
 
 | GB | Folder | Status |
 |---|---|---|
 | 563.24 | `40_Media/ROMS` | Being zipped per-system. **Grew from 559 GB** because `.zip` files sit next to un-deleted originals. |
 | 76.2 | `20_Photos` | ✅ sorted by year |
-| 71.07 | `00_Inbox` | ⬅ main remaining work |
+| 21.6 | `00_Inbox` | ✅ deduped + classified + staged (see below) — **now the main remaining work is human review, not automation** |
 | 34.4 | `30_Portfolio` | ✅ sorted (MCN 24.77) |
 | 16.89 | `40_Media/Video` | ✅ |
 | 5.87 | `40_Media/The Chronicles of Riddick…` | purge — game install |
 | 0.27 | `90_Archive` | screenshots |
 | 0.07 | `10_Documents` | ✅ sorted |
 
-`00_Inbox` breakdown — two overlapping Google Drive exports are the bulk:
+### 00_Inbox: dedupe + RetroArch merge + classifier — all done (2026-07-30/31)
 
-| GB | Folder |
-|---|---|
-| 54.85 | `david.hilgendorf@gmail.com - Google Drive/` |
-| 9.51 | `from-gdrive/` |
-| 3.42 | `david.hilgendorf@gmail.com - Dropbox/` |
-| 1.40 | `PDF/` |
-| 0.65 | `david.hilgendorf@gmail.com - Box.com/` |
-| 0.61 | `Ty_Harden-20221129T204758Z-001/` |
-| 0.54 | `root-cleanup/` |
+1. **Dedupe vs. filed folders (10/20/30/40/90):** hash-matched every inbox file against everything
+   already sorted. Deleted **15,158** exact duplicates + 0 internal dupes, then `rmdirs`. Inbox
+   dropped from 71.07 GB / ~20k files → 21.6 GB / 4,736 files.
+2. **RetroArch merge:** the inbox's `RetroArch/saves|states|config` export was copied server-side
+   into `40_Media/RetroArch`, verified with `rclone check --one-way` (0 differences, 31/31 match),
+   then the inbox source was purged.
+3. **Classifier + staging** (script + full manifest saved to
+   `~/Desktop/inbox-classify/{classify.py,manifest.csv}`): every remaining file was rule-matched
+   against the taxonomy (brand keywords for Portfolio, doc-type keywords for Documents, filename/path
+   -embedded dates for Photos — **never `ModTime`**, which this Google Drive export proved unreliable
+   for photo-taken-date; verified `ModTime` diverges from the user's own `/YYYY/` folder structure).
+   Ambiguous items were deliberately left unclassified rather than guessed. Everything was then
+   physically moved (server-side, `rclone move --files-from`) into `00_Inbox/_staged/<category>/`,
+   preserving the original relative path for traceability:
 
-Google Drive holds only **70.79 GB total**, so those two exports overlap heavily with each other and
-with what's already filed in 10/20/30/40.
+   | Category | Files |
+   |---|---|
+   | `_review` (needs your judgment) | 3,159 |
+   | `30_Portfolio/MCN` | 823 |
+   | `90_Archive` (installers, Wii/NUS homebrew, junk logs) | 100 |
+   | `30_Portfolio/Editorial-Other` | 77 |
+   | `20_Photos/<year>` (2002, 2007–2024) | ~340 total |
+   | `10_Documents/Financial` | 44 |
+   | `10_Documents/Legal` | 32 |
+   | `10_Documents/Resume` | 31 |
+   | `10_Documents/Employment` | 15 |
+   | `30_Portfolio/{Mercedes-Benz,OSK,AMSOIL,FocalPoint,SCRAM,VBMWMO}` | 45 |
+   | `10_Documents/{Identity,Vehicle,Medical}` | 9 |
+   | `40_Media/{Video,Audio Books}` | 11 |
+
+   **Flagging two sensitive folders found during classification** (per the "run security checks,
+   report findings" rule) — both were kept together as a unit under `10_Documents/Legal` rather than
+   scattered by keyword, and **not opened/read beyond the filenames needed to route them**:
+   - `2.Home/Divorce/` (12 files: tax return letters, marital settlement, mortgage/Visa statements,
+     insurance, a divorce procedural checklist). One file in it is literally named `...MCN COVERS.pdf`
+     — the classifier's first pass nearly filed that into the MCN portfolio bucket on a brand-keyword
+     match before a folder-level override caught it.
+   - `4.PDF/23-026598-Hilgendorf_David/` (11 files: criminal complaint, search warrant, bail bond,
+     summons, hospital diagnosis, towing, victim-witness, license-revocation intent) — an apparent
+     court case file. Kept intact under Legal for your review.
+
+   Next step is **you (or a future session) manually sorting `_staged/_review`** into the final
+   10/20/30/40/90 folders — the classifier deliberately erred toward *not guessing* (67% landed in
+   `_review`), so this is expected, not a failure of the automation.
 
 ## 6. Completed
 
@@ -149,6 +181,13 @@ Remove-Item $tmp -Recurse -Force
 
 **Never per-file zip `.bin`/`.cue` pairs** — it splits multi-track discs and breaks them.
 
+### B. ~~Dedupe `00_Inbox` against everything already filed~~ — DONE 2026-07-30/31, see §5
+
+The PowerShell below is kept for reference only (e.g. if a future export needs the same treatment);
+it has already been run against the current inbox contents and does not need to be re-run.
+
+<details><summary>Original dedupe script (already executed)</summary>
+
 ### B. Dedupe `00_Inbox` against everything already filed
 
 Hash-based, metadata-only. Note: PowerShell's `h` is an alias for `Get-History`, so do not name a
@@ -214,6 +253,13 @@ rclone rmdirs "onedrive:00_Inbox" --leave-root --dry-run
 
 Leave topic folders alone (`PDF`, `notes`, `Two Wheel`, `Ty_Harden…`, `Microsoft Copilot Chat Files`).
 **Watch for `0.ROMS`/`3.Games` inside the Google Drive export** — that would be a third ROM copy; purge it.
+
+</details>
+
+The `_MERGED`/`_CONFLICTS` flat-merge idea above was **not** what actually got run — instead a
+per-file classifier staged everything into `00_Inbox/_staged/<taxonomy-category>/` (see §5), which
+gives the same "one reviewable tree" outcome but pre-sorted by destination category instead of by
+source export. No third ROM copy was found in the Google Drive export during classification.
 
 ### C. Quick purges
 
