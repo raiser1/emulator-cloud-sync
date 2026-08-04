@@ -1,6 +1,6 @@
 # OneDrive Cleanup — Handoff Brief for Local Claude Code (Diablo)
 
-_Owner: david.hilgendorf@gmail.com · Last updated 2026-07-30 by the cloud session._
+_Owner: david.hilgendorf@gmail.com · Last updated 2026-08-04 by the cloud session._
 
 **Read this first, then execute from "Remaining Work" down.** You are running on Diablo (Windows,
 PowerShell) with `rclone` already configured. Everything here runs **server-side in the cloud** —
@@ -45,18 +45,38 @@ If you hit `empty token`, run `rclone config reconnect gdrive:`.
 `Personal Vault/` throws `invalidResourceId: ObjectHandle is Invalid` — it is the BitLocker-encrypted
 OneDrive vault. **rclone cannot reach it by design. Leave it alone.** Not an error to fix.
 
-## 5. Current state (updated 2026-07-31)
+## 5. Current state (measured 2026-08-04, post-audit)
 
-| GB | Folder | Status |
-|---|---|---|
-| 563.24 | `40_Media/ROMS` | Being zipped per-system. **Grew from 559 GB** because `.zip` files sit next to un-deleted originals. |
-| 76.2 | `20_Photos` | ✅ sorted by year |
-| 21.6 | `00_Inbox` | ✅ deduped + classified + staged (see below) — **now the main remaining work is human review, not automation** |
-| 34.4 | `30_Portfolio` | ✅ sorted (MCN 24.77) |
-| 16.89 | `40_Media/Video` | ✅ |
-| 5.87 | `40_Media/The Chronicles of Riddick…` | purge — game install |
-| 0.27 | `90_Archive` | screenshots |
-| 0.07 | `10_Documents` | ✅ sorted |
+| GB | Files | Folder | Status |
+|---|---|---|---|
+| 577.37 | 26,216 | `40_Media` | ROMs + video. See open decision at the bottom. |
+| 77.74 | 25,568 | `20_Photos` | ✅ sorted by year |
+| 52.23 | 13,141 | `30_Portfolio` | ✅ sorted |
+| 2.39 | 1,370 | `00_Inbox` | ✅ deduped, classified, staged — remainder is human review, not cleanup debt |
+| 0.26 | 222 | `90_Archive` | screenshots |
+| 0.15 | 373 | `10_Documents` | ✅ sorted — thin; verify docs aren't living in `30_Portfolio` |
+
+Total ≈ **710 GB**, but OneDrive still reports ~800 GB used: deleted items sit in the Recycle Bin and
+count against the 1 TB quota for 30 days. **No quota has been reclaimed yet** — see §F.
+
+### Audit 2026-08-04 — inbox verified clean
+
+| Check | Result |
+|---|---|
+| Residual dupes (inbox files already filed elsewhere) | **0**, against a 61,555-file hash index |
+| Internal dupes within `00_Inbox` (`rclone dedupe --by-hash`) | **0** |
+| Empty folders (`rclone rmdirs --dry-run`) | **0** |
+
+The non-empty hash index is the load-bearing part of that result: zero residuals against a *zero*
+index would be a silent hashing failure presenting as success. Always assert the index size first.
+
+`rclone dedupe --by-hash` and `rmdirs --dry-run` are authoritative for those two questions — a
+hand-rolled emptiness check written during this audit false-flagged populated folders (e.g.
+`_review/PDF`, which holds hundreds of files). Trust rclone over a bespoke reimplementation.
+
+Still in `00_Inbox` and needing human judgment, not a script: the `_staged/_review` bucket,
+`Photos.zip` + `Photos (1).zip` (**different hashes** — check whether one is a truncated download
+before filing either), and assorted `.gpx`/`.docx` work files.
 
 ### 00_Inbox: dedupe + RetroArch merge + classifier — all done (2026-07-30/31)
 
@@ -105,6 +125,13 @@ OneDrive vault. **rclone cannot reach it by design. Leave it alone.** Not an err
    10/20/30/40/90 folders — the classifier deliberately erred toward *not guessing* (67% landed in
    `_review`), so this is expected, not a failure of the automation.
 
+   **Recommendation on those two folders:** `2.Home/Divorce/` and `4.PDF/23-026598-Hilgendorf_David/`
+   belong in the **BitLocker-encrypted Personal Vault**, not plain `10_Documents/Legal`. That move has
+   to be done by hand in the OneDrive web UI or the sync client — rclone cannot reach the Vault (§4).
+   Until then, treat `10_Documents/Legal/**` the way `Identity/**` is treated in §I: **exclude it from
+   the Google Drive redundancy mirror.** Court records and settlement documents should not be
+   duplicated to a second provider.
+
 ## 6. Completed
 
 - Full multi-cloud audit + security sweep: **24 sensitive items verified owner-only, none shared**
@@ -112,7 +139,17 @@ OneDrive vault. **rclone cannot reach it by design. Leave it alone.** Not an err
 - All clouds copied into OneDrive; taxonomy built; `Pictures/`, `Dropbox.com/`, `VBMWMO/`,
   `Overland Expo/`, root dumps sorted into numbered folders.
 - Empty junk purged (`_MASTER`, `win64_*`, `Supermodel_*`, `99_ToDelete-Installers`).
-- N64 ROMs zipped (7-Zip, `-tzip -mx=9`).
+- N64 ROMs zipped (7-Zip, `-tzip -mx=9`); `.z64` originals deleted after zip verification.
+- **§B inbox dedupe — audited clean 2026-08-04** (see §5). 133.8 GB → 2.39 GB across the whole effort.
+- Confirmed the cleanup ran **cloud-side**, as required: 691.8 GB / 58,843 files are Files-On-Demand
+  placeholders; only 19.2 GB is hydrated on Diablo, with 16 pinned files at 0.0 GB.
+  **Caveat for future audits:** `Get-ChildItem | Measure-Object Length` reports a placeholder's
+  *logical* size, so it cannot tell "downloaded" from "not downloaded" — it read 711 GB when the true
+  on-disk figure was 19.2 GB. Check the `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` (`0x400000`) attribute
+  instead, or compare `Get-Volume C` free space.
+- Windows Defender CPU spikes during cleanup traced to the sync client reconciling placeholder
+  metadata. Benign, idle-priority, **no exclusions added** — scanning content arriving from decade-old
+  cloud exports is exactly what you want left on.
 
 ## 7. NOT David's content — never migrate, never delete as his
 
@@ -291,11 +328,18 @@ rclone dedupe --by-hash --dedupe-mode newest onedrive:"10_Documents" --dry-run
 Plain `rclone dedupe` (name-based) does **not** work on OneDrive — it can't hold same-name files in
 one folder. `--by-hash` is required, and it satisfies the 100%-match rule.
 
-### F. Empty the Recycle Bin
+### F. Empty the Recycle Bin — ⬅ **now the biggest space win available**
 
 Deleted OneDrive files **still count against the 1 TB quota** for 30 days. Used space will not drop
 until the bin is emptied at onedrive.com. Keep it as the safety net through the cleanup, empty it
 once the layout is confirmed.
+
+As of 2026-08-04 the sorted tree totals ~710 GB while OneDrive reports ~800 GB used — that ~90 GB gap
+is the bin. Everything the dedupe deleted has reclaimed **zero** quota until this runs.
+
+It is also the point of no return: the bin is the only undo for the 15,158 deleted duplicates. The
+§5 audit is clean, so the case for emptying is strong — but leave a few days between a clean audit
+and pulling the trigger.
 
 ### G. Clean the source clouds (only after `rclone check` confirms the copies landed)
 
@@ -309,9 +353,14 @@ rclone delete gdrive:"Downloads" --include "*.exe" --include "*.msi" --include "
 Google Drive `Downloads` still holds installers and ~11 `.torrent` files. `2.Home/Documents` still
 has the 2018/2019 duplicate pairs (e.g. `Himalayan.docx` ×2, identical size).
 
-### H. E: SSD hard backup — **David said do not touch E: until OneDrive is confirmed sorted**
+### H. E: SSD hard backup — gate met 2026-08-04, still needs David's go-ahead
 
-Scope chosen: **important tier only.**
+David's condition was "not touching E: until OneDrive is confirmed sorted." The §5 audit is clean, so
+the condition is satisfied — but he set the gate, so confirm before running.
+
+Scope chosen: **important tier only** — at current sizes ~**130 GB** pulled down from the cloud
+(10_Documents 0.15 + 20_Photos 77.74 + 30_Portfolio 52.23). Check free space on E: first. This is a
+deliberate, sanctioned exception to hard rule #3 (no local downloads >10 MB).
 
 ```powershell
 rclone sync onedrive:"10_Documents" "E:\OneDrive-Backup\10_Documents" -P
@@ -319,15 +368,26 @@ rclone sync onedrive:"20_Photos"    "E:\OneDrive-Backup\20_Photos"    -P
 rclone sync onedrive:"30_Portfolio" "E:\OneDrive-Backup\30_Portfolio" -P
 ```
 
+`rclone sync` is **destructive on the destination** — it deletes anything on E: not present in the
+source. If E: already holds unrelated data, `--dry-run` each line first.
+
 ### I. Redundancy mirror OneDrive → Google Drive (last)
 
 ```powershell
 rclone sync onedrive:"30_Portfolio" gdrive:"Backup/30_Portfolio" -P
 rclone sync onedrive:"20_Photos"    gdrive:"Backup/20_Photos"    -P
-rclone sync onedrive:"10_Documents" gdrive:"Backup/10_Documents" --exclude "Identity/**" -P
+rclone sync onedrive:"10_Documents" gdrive:"Backup/10_Documents" `
+  --exclude "Identity/**" --exclude "Legal/**" -P
 ```
 
 `Identity/**` is excluded on purpose — passport/SSN/licenses stay OneDrive-only, never mirrored.
+`Legal/**` is excluded for the same reason: the classifier routed a divorce settlement folder and an
+apparent court case file there (§5). Court records should not be duplicated to a second provider.
+
+**Status check:** as of 2026-08-04 `gdrive:Backup/` still contains only `20_Photos` and
+`30_Portfolio` — no `10_Documents`. This step has not run yet. Google Drive holds 70.79 GB total
+against ~130 GB in the important tier, so **the mirror will not fit** without either more Drive
+storage or a narrower scope. Decide that before running it.
 
 ---
 
