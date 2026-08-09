@@ -89,6 +89,12 @@ require_rclone() {
   [ -n "$RCLONE" ] || { err "rclone not installed. Run: pkg install rclone"; exit 1; }
 }
 
+# is this rclone remote actually configured? (catches "gdrive:" with no such section)
+remote_configured() {
+  local remote="$1"
+  "$RCLONE" listremotes 2>/dev/null | grep -qx "${remote}:"
+}
+
 # split a colon-separated path list into an array (var name passed in)
 split_paths() { local IFS=':'; read -r -a "$2" <<< "$1"; }
 
@@ -151,12 +157,14 @@ sync_saves_one() {
   local k="$1" force="${2:-}"          # force = "" | "resync" | "push" | "fetch" | "dry"
   usable "$k" || { warn "${P_LABEL[$k]}: needs root, skipping"; return 0; }
   local remote; remote="$(remote_for "$k")"
+  remote_configured "$remote" || { err "${P_LABEL[$k]}: rclone remote '$remote:' not configured — run: rclone config"; return 1; }
   local rbase="$remote:$CLOUD_BASE/${P_SAVES_R[$k]}"
   local log="$LOG_DIR/${k}-saves.log"
 
   local all="${P_SAVES[$k]:-}:${P_CONFIG[$k]:-}"
   local arr; split_paths "$all" arr
   local idx=0
+  local failed=0
   for p in "${arr[@]}"; do
     [ -z "$p" ] && continue
     idx=$((idx+1))
@@ -166,27 +174,32 @@ sync_saves_one() {
 
     # ROOT: stage private dir into a Termux-readable copy
     if [ "${P_ROOT[$k]:-0}" = "1" ]; then
-      lpath="$(root_bridge "$k" pull_in "$p")" || continue
+      lpath="$(root_bridge "$k" pull_in "$p")" || { failed=1; continue; }
     fi
     [ -e "$lpath" ] || { mkdir -p "$lpath"; }
 
     printf '%s  ↔ %s%s\n' "$c_dim" "$leaf" "$c_reset"
     case "$force" in
-      dry)    "$RCLONE" bisync "$lpath" "$dst" "${BISYNC_FLAGS[@]}" --dry-run 2>>"$log" | sed 's/^/     /' ;;
-      push)   "$RCLONE" copy   "$lpath" "$dst" --update 2>>"$log" ;;
-      fetch)  "$RCLONE" copy   "$dst" "$lpath" --update 2>>"$log" ;;
-      resync) "$RCLONE" bisync "$lpath" "$dst" "${BISYNC_FLAGS[@]}" --resync 2>>"$log" ;;
+      dry)    "$RCLONE" bisync "$lpath" "$dst" "${BISYNC_FLAGS[@]}" --dry-run 2>>"$log" | sed 's/^/     /'
+              [ "${PIPESTATUS[0]}" -eq 0 ] || failed=1 ;;
+      push)   "$RCLONE" copy   "$lpath" "$dst" --update 2>>"$log" || failed=1 ;;
+      fetch)  "$RCLONE" copy   "$dst" "$lpath" --update 2>>"$log" || failed=1 ;;
+      resync) "$RCLONE" bisync "$lpath" "$dst" "${BISYNC_FLAGS[@]}" --resync 2>>"$log" || failed=1 ;;
       *)      if ! "$RCLONE" bisync "$lpath" "$dst" "${BISYNC_FLAGS[@]}" 2>>"$log"; then
                 warn "first run needs a baseline — doing resync for $leaf"
-                "$RCLONE" bisync "$lpath" "$dst" "${BISYNC_FLAGS[@]}" --resync 2>>"$log"
+                "$RCLONE" bisync "$lpath" "$dst" "${BISYNC_FLAGS[@]}" --resync 2>>"$log" || failed=1
               fi ;;
     esac
 
     # ROOT: push the reconciled staging copy back into the private dir
     if [ "${P_ROOT[$k]:-0}" = "1" ] && [ "$force" != "dry" ]; then
-      root_bridge "$k" push_out "$p"
+      root_bridge "$k" push_out "$p" || failed=1
     fi
   done
+  if [ "$failed" -eq 1 ]; then
+    err "${P_LABEL[$k]} saves FAILED — see $log"
+    return 1
+  fi
   ok "${P_LABEL[$k]} saves done"
 }
 
@@ -195,6 +208,7 @@ pull_roms_one() {
   local k="$1"
   usable "$k" || { warn "${P_LABEL[$k]}: needs root, skipping ROMs"; return 0; }
   local remote; remote="$(remote_for "$k")"
+  remote_configured "$remote" || { err "${P_LABEL[$k]}: rclone remote '$remote:' not configured — run: rclone config"; return 1; }
   local src="$remote:$CLOUD_BASE/${P_ROMS_R[$k]}"
   local dst="${P_ROMS_L[$k]}"
   [ -n "$dst" ] || { warn "${P_LABEL[$k]}: no roms_local set"; return 0; }
