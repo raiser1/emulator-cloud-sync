@@ -24,6 +24,18 @@
 ## Verifying
 No Android/rclone here. Check with `bash -n bin/ecs` and `shellcheck`. Do not claim runtime behavior was tested.
 
+## User rules (ADDRULE)
+Rules the user has explicitly asked to persist. **Convention:** whenever the user prefixes a
+message with `ADDRULE:`, append the stated rule to this list (and commit it) so it carries across
+sessions.
+
+1. **Browser-first execution.** Check whether a task can be done via the browser / set up locally
+   before handing the user manual instructions. _(Boundary: from a cloud session the only browser
+   driven directly is this container's unauthenticated one; the user's authenticated browser is
+   reached via **Claude for Chrome** — route browser work there with a ready prompt.)_
+2. **`ADDRULE:` → persist here.** Any time the user prefixes an instruction with `ADDRULE:`, add
+   that rule to this list (and commit/push it) so it persists across sessions.
+
 ---
 
 Token discipline lives in the global `~/.claude/CLAUDE.md` (source: `raiser1/station`
