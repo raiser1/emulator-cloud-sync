@@ -317,16 +317,32 @@ rclone move onedrive:"20_Photos/X" onedrive:"00_Inbox/photos-X-review" --dry-run
 `30_Portfolio` while `10_Documents/Vehicle` is empty. Editorial work → leave. Owner manuals /
 service records → move to `10_Documents/Vehicle`.
 
-### E. Dedupe the numbered folders
+### E. Dedupe the numbered folders — ⬅ **confirmed still needed, visible evidence 2026-08-11**
+
+**Not covered by the 2026-08-04 `00_Inbox` audit.** That audit only proved `00_Inbox` had no
+leftover copies of files already filed into 10/20/30/40 — it never checked whether the numbered
+folders have duplicates *within themselves*. They can: during the original multi-cloud
+consolidation, photos landed in `20_Photos` two ways — some passed through `00_Inbox` and got
+deduped on the way in, others were copied directly from OneDrive's native Camera Roll, Google
+Drive, Dropbox, and Box, bypassing the inbox dedupe entirely.
+
+David found the result by eye 2026-08-11 in `20_Photos/2018`: several copies of the same trail-cam
+photo (`20180113_170527.jpg`, `...(4).jpg`, `..._f560....jpg`), same base filename, different
+"modified" dates (2018/2019/2025) — one per upload path. Classic Windows/OneDrive auto-collision
+suffixing, not four different photos.
 
 ```powershell
-rclone dedupe --by-hash --dedupe-mode newest onedrive:"20_Photos"    --dry-run
-rclone dedupe --by-hash --dedupe-mode newest onedrive:"30_Portfolio" --dry-run
-rclone dedupe --by-hash --dedupe-mode newest onedrive:"10_Documents" --dry-run
+rclone dedupe --by-hash --dedupe-mode oldest onedrive:"20_Photos"    --dry-run
+rclone dedupe --by-hash --dedupe-mode oldest onedrive:"30_Portfolio" --dry-run
+rclone dedupe --by-hash --dedupe-mode oldest onedrive:"10_Documents" --dry-run
 ```
 
 Plain `rclone dedupe` (name-based) does **not** work on OneDrive — it can't hold same-name files in
 one folder. `--by-hash` is required, and it satisfies the 100%-match rule.
+
+`--dedupe-mode oldest`, not `newest`: since `--by-hash` only matches byte-identical files, content
+is the same either way — this only decides which *filename* survives. `oldest` favors the original
+upload's clean name over a later reprocessed copy's hash-suffixed one.
 
 ### F. Empty the Recycle Bin — ⬅ **now the biggest space win available**
 
