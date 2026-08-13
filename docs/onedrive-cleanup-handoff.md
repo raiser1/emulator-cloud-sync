@@ -344,6 +344,35 @@ one folder. `--by-hash` is required, and it satisfies the 100%-match rule.
 is the same either way — this only decides which *filename* survives. `oldest` favors the original
 upload's clean name over a later reprocessed copy's hash-suffixed one.
 
+### E2. Near-duplicate names — a genuinely different problem from E, run E first
+
+David found a second pattern 2026-08-11, this time in an older, hand-captioned album (`A nice
+church.jpg`, `A nice church_5911ea84.jpg`, `A nice Fountain (1).jpg`, ...). **This is not what §E
+solves.** Every noise suffix observed is exactly 8 hex characters — almost certainly a CRC32 an old
+upload tool appended on a same-name/different-bytes collision. If the bytes had matched, that tool
+would have overwritten instead of renaming. So by construction, anything still clustered by name
+*after* §E's `--by-hash` pass has run is genuinely different content (resized, recompressed,
+re-exported) — `--by-hash` will never merge these, correctly, because they are not byte-identical.
+
+Closing this gap means matching by normalized *name* instead of hash — a real, deliberate departure
+from the 100%-match rule, so nothing here auto-deletes. `scripts/find-near-duplicates.ps1`:
+
+```powershell
+.\scripts\find-near-duplicates.ps1 -Remote "onedrive:20_Photos"
+```
+
+Lists the remote via `rclone lsjson` (metadata only, zero downloads), strips the ` (N)` and
+`_[hex]{6,10}` suffixes, clusters what's left, and writes `clusters.csv` /
+`clusters.txt` to `~/Desktop/near-dupe-review/` — suggesting the **largest file per cluster** as
+KEEP (a re-encoded/resized copy is almost always smaller than the true original; this is a proxy,
+not a guarantee). Nothing is deleted. Review the CSV.
+
+Only once satisfied, `-BuildDeleteList` additionally writes `delete-candidates.txt` and prints the
+matching `rclone delete --files-from ... --dry-run` / live commands, same pattern as the `00_Inbox`
+dedupe. **Low-stakes personal photo trees only** (`20_Photos`). Do not run `-BuildDeleteList`
+against `30_Portfolio` or anything P1/archive — review those clusters by hand instead; a wrong
+"largest = keep" guess on an edited/final version of professional work is a real loss.
+
 ### F. Empty the Recycle Bin — ⬅ **now the biggest space win available**
 
 Deleted OneDrive files **still count against the 1 TB quota** for 30 days. Used space will not drop
