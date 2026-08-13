@@ -1,5 +1,12 @@
 # Emulator Cloud Sync (`ecs`)
 
+> **Closed 2026-08-13** — broken and had become noise (David's call). Nothing
+> here is being second-guessed; this just isn't active. To reopen: see
+> `raiser1/station` ticket **STN-0023** for the reopen path, then find out
+> what broke before rebuilding. The OneDrive-cleanup docs in this same repo
+> (`docs/onedrive-cleanup-handoff.md`, STN-0016–0020) are a **separate,
+> still-active** effort — this closure does not touch them.
+
 Keep your Android emulators' **saves & configs** in sync two-ways with **Google
 Drive or OneDrive**, and **pull ROMs down on demand** — so you store games once
 in the cloud and access them from any device, with saves that follow you.
