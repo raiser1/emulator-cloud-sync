@@ -52,6 +52,11 @@ profile() {
   P_REMOTE[$key]=""          # optional per-profile remote override
   while [ "$#" -ge 2 ]; do
     local field="$1" value="$2"; shift 2
+    # P_PKG (below) is documentation only — which Android package a root
+    # profile's paths belong to. No command derives a path from it, which
+    # reads as a dead write; kept for forward compatibility since
+    # profiles/emulators.conf documents it as a field.
+    # shellcheck disable=SC2034
     case "$field" in
       label)        P_LABEL[$key]="$value" ;;
       root)         P_ROOT[$key]="$value" ;;
@@ -75,6 +80,7 @@ RCLONE="$(command -v rclone || true)"
 remote_for() { local k="$1"; [ -n "${P_REMOTE[$k]}" ] && echo "${P_REMOTE[$k]}" || echo "$CLOUD_REMOTE"; }
 
 # common rclone flags for bidirectional SAVE sync — the safety rails
+# shellcheck disable=SC2054  # the comma is rclone's --compare value, not an array separator
 BISYNC_FLAGS=(
   --conflict-resolve newer      # newer file wins a true conflict
   --conflict-loser pathname     # keep the loser as name..conflict, never delete it
@@ -114,7 +120,8 @@ targets() {
 # direction push_out = su copy staging -> device-private  (after downloading)
 root_bridge() {
   local key="$1" dir="$2" src="$3"
-  local stage="$STAGING/$key$(printf '%s' "$src" | tr '/' '_')"
+  local stage
+  stage="$STAGING/$key$(printf '%s' "$src" | tr '/' '_')"
   case "$dir" in
     pull_in)
       su -c "mkdir -p '$stage' && cp -a '$src/.' '$stage/' 2>/dev/null; chmod -R a+rwX '$stage'" \
@@ -200,12 +207,15 @@ pull_roms_one() {
   [ -n "$dst" ] || { warn "${P_LABEL[$k]}: no roms_local set"; return 0; }
   mkdir -p "$dst"
   head "Pulling ROMs: ${P_LABEL[$k]}  ($src -> $dst)"
-  "$RCLONE" copy "$src" "$dst" \
+  if "$RCLONE" copy "$src" "$dst" \
       --progress --transfers 4 --checkers 8 \
       --size-only --check-first \
-      --log-file "$LOG_DIR/${k}-roms.log" \
-    && ok "${P_LABEL[$k]} ROMs up to date" \
-    || warn "${P_LABEL[$k]} ROM pull hit an issue — see $LOG_DIR/${k}-roms.log"
+      --log-file "$LOG_DIR/${k}-roms.log"
+  then
+    ok "${P_LABEL[$k]} ROMs up to date"
+  else
+    warn "${P_LABEL[$k]} ROM pull hit an issue — see $LOG_DIR/${k}-roms.log"
+  fi
 }
 
 # ---- dispatch -------------------------------------------------------------
